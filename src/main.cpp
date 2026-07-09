@@ -5,16 +5,26 @@
 // the target it will wire real StreamSources (RTSP/ONVIF/GB28181) -> MediaHub ->
 // Recorder -> StorageEngine, plus preview (MPP decode + WebRTC) and the LVGL UI.
 
+#include <atomic>
 #include <chrono>
+#include <csignal>
+#include <cstdlib>
 #include <cstring>
 #include <string>
+#include <thread>
 
 #include "nvr/common/logging.h"
 #include "nvr/media/media_hub.h"
+#include "nvr/media/stream_source.h"
 #include "nvr/record/recorder.h"
 #include "nvr/storage/storage_engine.h"
 
 using namespace nvr;
+
+namespace {
+std::atomic<bool> g_stop{false};
+void OnSignal(int) { g_stop.store(true); }
+}  // namespace
 
 namespace {
 
@@ -34,17 +44,24 @@ Frame MakeFrame(int channel, bool key, uint64_t ts_ms, int payload) {
 
 int main(int argc, char** argv) {
   std::string root = "/tmp/nvr_storage";
+  std::string rtsp_url;
+  int seconds = 0;  // 0 => run until Ctrl-C (RTSP mode)
   for (int i = 1; i < argc; ++i) {
-    if (std::strcmp(argv[i], "--root") == 0 && i + 1 < argc) root = argv[++i];
+    if (std::strcmp(argv[i], "--root") == 0 && i + 1 < argc)
+      root = argv[++i];
+    else if (std::strcmp(argv[i], "--rtsp") == 0 && i + 1 < argc)
+      rtsp_url = argv[++i];
+    else if (std::strcmp(argv[i], "--seconds") == 0 && i + 1 < argc)
+      seconds = std::atoi(argv[++i]);
   }
 
   NVR_LOGI("nvrd starting, storage root = %s", root.c_str());
 
   // Small layout so the demo does not allocate real 900GB per disk.
   DiskLayout layout;
-  layout.data_file_size = 4 * 1024 * 1024;  // 4MB data files
-  layout.data_files_per_disk = 4;
-  layout.log_capacity = 1024;
+  layout.data_file_size = 64 * 1024 * 1024;  // 64MB data files
+  layout.data_files_per_disk = 8;
+  layout.log_capacity = 65536;
 
   StorageEngine storage(layout);
   if (!storage.Init(root)) {
@@ -54,14 +71,53 @@ int main(int argc, char** argv) {
   }
 
   Recorder recorder(&storage);
-  MediaHub hub;  // one camera's distribution node (demo)
+  MediaHub hub;  // one camera's distribution node
   hub.Subscribe([&](const Frame& f) { recorder.OnFrame(f); });
 
   RecordPolicy policy;
   policy.timed = true;  // continuous recording for the demo channel
   recorder.SetPolicy(0, policy);
 
-  // Push a couple of seconds of synthetic frames (1 I-frame/sec + P frames).
+  if (!rtsp_url.empty()) {
+    // Live RTSP ingest: RtspSource -> MediaHub -> Recorder -> StorageEngine.
+    CameraConfig cfg;
+    cfg.channel = 0;
+    cfg.protocol = CameraConfig::Protocol::kRtsp;
+    cfg.main_url = rtsp_url;
+    auto src = CreateStreamSource(cfg);
+    if (!src) {
+      NVR_LOGE("cannot create RTSP source (built without FFmpeg?)");
+      return 1;
+    }
+    src->set_callback(StreamKind::kMain, [&](const Frame& f) { hub.Publish(f); });
+
+    std::signal(SIGINT, OnSignal);
+    std::signal(SIGTERM, OnSignal);
+    src->Start();
+    NVR_LOGI("ingesting %s (Ctrl-C to stop)%s", rtsp_url.c_str(),
+             seconds ? "" : " ...");
+
+    uint64_t start = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::seconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count());
+    while (!g_stop.load()) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(200));
+      if (seconds) {
+        uint64_t now = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::seconds>(
+                std::chrono::system_clock::now().time_since_epoch()).count());
+        if (now - start >= static_cast<uint64_t>(seconds)) break;
+      }
+    }
+    src->Stop();
+    storage.Flush();
+    const auto& end = storage.global_end();
+    NVR_LOGI("stopped. global end: disk=%d slot=%lld found=%d", end.disk_index,
+             static_cast<long long>(end.slot), end.found);
+    return 0;
+  }
+
+  // Synthetic demo: a couple of seconds of frames (1 I-frame/sec + P frames).
   uint64_t ts = static_cast<uint64_t>(
       std::chrono::duration_cast<std::chrono::milliseconds>(
           std::chrono::system_clock::now().time_since_epoch())
