@@ -9,6 +9,10 @@ set(NVR_CORE_SRCS
   storage/storage_engine.cpp
   media/stream_source.cpp
   media/onvif.cpp
+  media/sip.cpp
+  media/rtp_receiver.cpp
+  media/ps_depacketizer.cpp
+  media/gb28181_source.cpp
   record/recorder.cpp
 )
 
