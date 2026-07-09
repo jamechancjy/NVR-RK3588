@@ -23,6 +23,8 @@ RK3588 上的网络视频录像机（NVR）。目标规格：
 - 上电恢复 — 定位**全局唯一 end**（最靠近初始逻辑盘），前后行校验取最后一个，清理其余所有 end。
 - `nvr::MediaHub` / `nvr::StreamSource` / `nvr::Recorder` — 数据分发、接入源接口、带预录像 ring buffer 的录像器。
 - `nvr::RtspSource` — **RTSP 拉流接入**（FFmpeg libavformat，不解码）：拉 H.264/H.265 视频 + AAC 音频压缩帧，自动重连，直接喂给录像/存储链路。
+- `nvr::OnvifProbe` / `nvr::OnvifClient` / `nvr::OnvifSource` — **ONVIF 自动发现 + 取流**：WS-Discovery 组播发现设备，`GetProfiles`/`GetStreamUri`（WS-Security PasswordDigest 鉴权）解析出 RTSP 地址，再走 RtspSource。
+- `nvr::Gb28181Source`（+ `SipMessage` / `RtpReceiver` / `PsDepacketizer`）— **GB28181 国标接入**：SIP INVITE 拉流，设备把 MPEG-PS over RTP 发来，解包成 H.264/H.265 帧喂给存储链路（无第三方 SIP 库）。
 
 ## 帧 / 日志格式
 
@@ -53,7 +55,29 @@ RTSP 实时接入（需 FFmpeg 开发库；CMake 会自动探测，`FFmpeg (RTSP
 ./build/src/nvrd --root /tmp/nvr_storage --rtsp rtsp://user:pass@<cam-ip>:554/stream1
 ```
 
-不带 FFmpeg 时 RtspSource 不编译、RTSP 工厂返回 nullptr，其余功能不受影响。
+不带 FFmpeg 时 RtspSource/OnvifSource 不编译、对应工厂返回 nullptr，其余功能（含 GB28181、ONVIF 发现）不受影响。
+
+ONVIF（自动发现 + 取流）：
+
+```bash
+# 局域网发现 ONVIF 设备（打印 xaddr/uuid/scopes）
+./build/src/nvrd --onvif-discover
+# 由设备服务地址解析 RTSP 并录像
+./build/src/nvrd --root /tmp/nvr_storage \
+  --onvif http://<cam-ip>/onvif/device_service --user admin --pass <pwd>
+```
+
+GB28181（国标）：SIP INVITE 拉流，或被动接收 RTP/PS（不含 FFmpeg 依赖）：
+
+```bash
+# 完整 SIP 流程：NVR 作为客户端向设备发 INVITE
+./build/src/nvrd --root /tmp/nvr_storage \
+  --gb-local <20位平台ID>@<nvr-ip>:5060 \
+  --gb-device <20位设备/通道ID>@<dev-ip>:5060
+
+# 被动模式（信令在别处完成，仅收 RTP/PS，便于联调）
+./build/src/nvrd --root /tmp/nvr_storage --gb-passive --gb-rtp-port 40000
+```
 
 ## 构建（RK3588 目标）
 

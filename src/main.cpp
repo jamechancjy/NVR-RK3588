@@ -10,10 +10,12 @@
 #include <csignal>
 #include <cstdlib>
 #include <cstring>
+#include <memory>
 #include <string>
 #include <thread>
 
 #include "nvr/common/logging.h"
+#include "nvr/media/gb28181_source.h"
 #include "nvr/media/media_hub.h"
 #include "nvr/media/onvif.h"
 #include "nvr/media/stream_source.h"
@@ -48,6 +50,9 @@ int main(int argc, char** argv) {
   std::string rtsp_url;
   std::string onvif_url, onvif_user, onvif_pass;
   bool onvif_discover = false;
+  // GB28181 options.
+  Gb28181Config gb;
+  bool gb_mode = false;
   int seconds = 0;  // 0 => run until Ctrl-C (live mode)
   for (int i = 1; i < argc; ++i) {
     if (std::strcmp(argv[i], "--root") == 0 && i + 1 < argc)
@@ -62,7 +67,27 @@ int main(int argc, char** argv) {
       onvif_user = argv[++i];
     else if (std::strcmp(argv[i], "--pass") == 0 && i + 1 < argc)
       onvif_pass = argv[++i];
-    else if (std::strcmp(argv[i], "--seconds") == 0 && i + 1 < argc)
+    else if (std::strcmp(argv[i], "--gb-passive") == 0) {
+      gb_mode = true;
+      gb.passive = true;
+    } else if (std::strcmp(argv[i], "--gb-rtp-port") == 0 && i + 1 < argc) {
+      gb_mode = true;
+      gb.rtp_port = std::atoi(argv[++i]);
+    } else if (std::strcmp(argv[i], "--gb-local") == 0 && i + 1 < argc) {
+      gb_mode = true;  // format: <id>@<ip>:<sipport>
+      std::string s = argv[++i];
+      size_t at = s.find('@'), colon = s.find(':', at);
+      gb.local_id = s.substr(0, at);
+      gb.local_ip = s.substr(at + 1, colon - at - 1);
+      if (colon != std::string::npos) gb.local_sip_port = std::atoi(s.c_str() + colon + 1);
+    } else if (std::strcmp(argv[i], "--gb-device") == 0 && i + 1 < argc) {
+      gb_mode = true;  // format: <id>@<ip>:<sipport>
+      std::string s = argv[++i];
+      size_t at = s.find('@'), colon = s.find(':', at);
+      gb.device_id = s.substr(0, at);
+      gb.device_ip = s.substr(at + 1, colon - at - 1);
+      if (colon != std::string::npos) gb.device_sip_port = std::atoi(s.c_str() + colon + 1);
+    } else if (std::strcmp(argv[i], "--seconds") == 0 && i + 1 < argc)
       seconds = std::atoi(argv[++i]);
   }
 
@@ -99,20 +124,29 @@ int main(int argc, char** argv) {
   policy.timed = true;  // continuous recording for the demo channel
   recorder.SetPolicy(0, policy);
 
-  if (!rtsp_url.empty() || !onvif_url.empty()) {
-    // Live ingest: (RTSP|ONVIF)Source -> MediaHub -> Recorder -> StorageEngine.
-    CameraConfig cfg;
-    cfg.channel = 0;
-    if (!onvif_url.empty()) {
-      cfg.protocol = CameraConfig::Protocol::kOnvif;
-      cfg.main_url = onvif_url;
-      cfg.user = onvif_user;
-      cfg.pass = onvif_pass;
+  if (!rtsp_url.empty() || !onvif_url.empty() || gb_mode) {
+    // Live ingest: source -> MediaHub -> Recorder -> StorageEngine.
+    std::unique_ptr<StreamSource> src;
+    std::string what;
+    if (gb_mode) {
+      src = std::make_unique<Gb28181Source>(0, gb);
+      what = gb.passive ? "gb28181(passive)" : ("gb28181 " + gb.device_id);
     } else {
-      cfg.protocol = CameraConfig::Protocol::kRtsp;
-      cfg.main_url = rtsp_url;
+      CameraConfig cfg;
+      cfg.channel = 0;
+      if (!onvif_url.empty()) {
+        cfg.protocol = CameraConfig::Protocol::kOnvif;
+        cfg.main_url = onvif_url;
+        cfg.user = onvif_user;
+        cfg.pass = onvif_pass;
+        what = onvif_url;
+      } else {
+        cfg.protocol = CameraConfig::Protocol::kRtsp;
+        cfg.main_url = rtsp_url;
+        what = rtsp_url;
+      }
+      src = CreateStreamSource(cfg);
     }
-    auto src = CreateStreamSource(cfg);
     if (!src) {
       NVR_LOGE("cannot create source (built without FFmpeg?)");
       return 1;
@@ -122,8 +156,7 @@ int main(int argc, char** argv) {
     std::signal(SIGINT, OnSignal);
     std::signal(SIGTERM, OnSignal);
     src->Start();
-    NVR_LOGI("ingesting %s (Ctrl-C to stop)%s",
-             onvif_url.empty() ? rtsp_url.c_str() : onvif_url.c_str(),
+    NVR_LOGI("ingesting %s (Ctrl-C to stop)%s", what.c_str(),
              seconds ? "" : " ...");
 
     uint64_t start = static_cast<uint64_t>(
