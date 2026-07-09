@@ -1,11 +1,14 @@
 set(NVR_CORE_SRCS
   common/crc32.cpp
   common/logging.cpp
+  common/base64.cpp
+  common/sha1.cpp
   storage/log_index.cpp
   storage/record_file.cpp
   storage/disk_manager.cpp
   storage/storage_engine.cpp
   media/stream_source.cpp
+  media/onvif.cpp
   record/recorder.cpp
 )
 
@@ -18,7 +21,7 @@ if(PkgConfig_FOUND)
     libavformat libavcodec libavutil)
   if(FFMPEG_FOUND)
     set(NVR_FFMPEG_FOUND TRUE)
-    list(APPEND NVR_CORE_SRCS media/rtsp_source.cpp)
+    list(APPEND NVR_CORE_SRCS media/rtsp_source.cpp media/onvif_source.cpp)
   endif()
 endif()
 message(STATUS "FFmpeg (RTSP ingest): ${NVR_FFMPEG_FOUND}")

@@ -13,8 +13,14 @@ namespace nvr {
 struct CameraConfig {
   int channel = 0;
   std::string name;
-  std::string main_url;  // RTSP URL / GB28181 device id for the main stream
-  std::string sub_url;   // sub stream
+  // For kRtsp:  main_url/sub_url are RTSP URLs.
+  // For kOnvif: main_url is the device service URL
+  //             (http://<ip>/onvif/device_service); the RTSP URI is resolved.
+  // For kGb28181: main_url is the device/channel id.
+  std::string main_url;
+  std::string sub_url;
+  std::string user;      // credentials for ONVIF / RTSP auth
+  std::string pass;
   enum class Protocol { kRtsp, kOnvif, kGb28181 } protocol = Protocol::kRtsp;
 };
 
