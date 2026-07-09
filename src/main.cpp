@@ -15,6 +15,7 @@
 
 #include "nvr/common/logging.h"
 #include "nvr/media/media_hub.h"
+#include "nvr/media/onvif.h"
 #include "nvr/media/stream_source.h"
 #include "nvr/record/recorder.h"
 #include "nvr/storage/storage_engine.h"
@@ -45,14 +46,34 @@ Frame MakeFrame(int channel, bool key, uint64_t ts_ms, int payload) {
 int main(int argc, char** argv) {
   std::string root = "/tmp/nvr_storage";
   std::string rtsp_url;
-  int seconds = 0;  // 0 => run until Ctrl-C (RTSP mode)
+  std::string onvif_url, onvif_user, onvif_pass;
+  bool onvif_discover = false;
+  int seconds = 0;  // 0 => run until Ctrl-C (live mode)
   for (int i = 1; i < argc; ++i) {
     if (std::strcmp(argv[i], "--root") == 0 && i + 1 < argc)
       root = argv[++i];
     else if (std::strcmp(argv[i], "--rtsp") == 0 && i + 1 < argc)
       rtsp_url = argv[++i];
+    else if (std::strcmp(argv[i], "--onvif-discover") == 0)
+      onvif_discover = true;
+    else if (std::strcmp(argv[i], "--onvif") == 0 && i + 1 < argc)
+      onvif_url = argv[++i];
+    else if (std::strcmp(argv[i], "--user") == 0 && i + 1 < argc)
+      onvif_user = argv[++i];
+    else if (std::strcmp(argv[i], "--pass") == 0 && i + 1 < argc)
+      onvif_pass = argv[++i];
     else if (std::strcmp(argv[i], "--seconds") == 0 && i + 1 < argc)
       seconds = std::atoi(argv[++i]);
+  }
+
+  // ONVIF LAN discovery: print devices and exit (no storage needed).
+  if (onvif_discover) {
+    auto devices = OnvifProbe(seconds ? seconds * 1000 : 3000);
+    NVR_LOGI("onvif discovery found %zu device(s)", devices.size());
+    for (const auto& d : devices)
+      NVR_LOGI("  xaddr=%s uuid=%s scopes=%s", d.xaddr.c_str(),
+               d.uuid.c_str(), d.scopes.c_str());
+    return 0;
   }
 
   NVR_LOGI("nvrd starting, storage root = %s", root.c_str());
@@ -78,15 +99,22 @@ int main(int argc, char** argv) {
   policy.timed = true;  // continuous recording for the demo channel
   recorder.SetPolicy(0, policy);
 
-  if (!rtsp_url.empty()) {
-    // Live RTSP ingest: RtspSource -> MediaHub -> Recorder -> StorageEngine.
+  if (!rtsp_url.empty() || !onvif_url.empty()) {
+    // Live ingest: (RTSP|ONVIF)Source -> MediaHub -> Recorder -> StorageEngine.
     CameraConfig cfg;
     cfg.channel = 0;
-    cfg.protocol = CameraConfig::Protocol::kRtsp;
-    cfg.main_url = rtsp_url;
+    if (!onvif_url.empty()) {
+      cfg.protocol = CameraConfig::Protocol::kOnvif;
+      cfg.main_url = onvif_url;
+      cfg.user = onvif_user;
+      cfg.pass = onvif_pass;
+    } else {
+      cfg.protocol = CameraConfig::Protocol::kRtsp;
+      cfg.main_url = rtsp_url;
+    }
     auto src = CreateStreamSource(cfg);
     if (!src) {
-      NVR_LOGE("cannot create RTSP source (built without FFmpeg?)");
+      NVR_LOGE("cannot create source (built without FFmpeg?)");
       return 1;
     }
     src->set_callback(StreamKind::kMain, [&](const Frame& f) { hub.Publish(f); });
@@ -94,7 +122,8 @@ int main(int argc, char** argv) {
     std::signal(SIGINT, OnSignal);
     std::signal(SIGTERM, OnSignal);
     src->Start();
-    NVR_LOGI("ingesting %s (Ctrl-C to stop)%s", rtsp_url.c_str(),
+    NVR_LOGI("ingesting %s (Ctrl-C to stop)%s",
+             onvif_url.empty() ? rtsp_url.c_str() : onvif_url.c_str(),
              seconds ? "" : " ...");
 
     uint64_t start = static_cast<uint64_t>(
