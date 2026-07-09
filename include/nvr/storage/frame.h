@@ -40,7 +40,8 @@ struct Frame {
   FrameType frame_type = FrameType::kP;
   Codec codec = Codec::kH265;
   int fps = 25;
-  uint64_t timestamp_ms = 0;
+  uint64_t timestamp_ms = 0;  // wall-clock arrival time (drives log.txt / ordering)
+  uint64_t pts_ms = 0;        // stream presentation timestamp (intra-channel A/V sync)
   std::vector<uint8_t> data;
 
   bool is_key() const { return frame_type == FrameType::kI; }

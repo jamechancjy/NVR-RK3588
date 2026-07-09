@@ -22,6 +22,7 @@ RK3588 上的网络视频录像机（NVR）。目标规格：
 - `nvr::DiskManager` — 逻辑盘发现（Linux 顺序）、是否已格式化检测、格式化（建 log.txt + 预分配数据文件）。
 - 上电恢复 — 定位**全局唯一 end**（最靠近初始逻辑盘），前后行校验取最后一个，清理其余所有 end。
 - `nvr::MediaHub` / `nvr::StreamSource` / `nvr::Recorder` — 数据分发、接入源接口、带预录像 ring buffer 的录像器。
+- `nvr::RtspSource` — **RTSP 拉流接入**（FFmpeg libavformat，不解码）：拉 H.264/H.265 视频 + AAC 音频压缩帧，自动重连，直接喂给录像/存储链路。
 
 ## 帧 / 日志格式
 
@@ -44,6 +45,15 @@ ctest --test-dir build --output-on-failure
 mkdir -p /tmp/nvr_storage/disk0 /tmp/nvr_storage/disk1
 ./build/src/nvrd --root /tmp/nvr_storage
 ```
+
+RTSP 实时接入（需 FFmpeg 开发库；CMake 会自动探测，`FFmpeg (RTSP ingest): TRUE` 即启用）：
+
+```bash
+# 拉一路 RTSP，连续录像写入存储；Ctrl-C 停止（或 --seconds N 定时停）
+./build/src/nvrd --root /tmp/nvr_storage --rtsp rtsp://user:pass@<cam-ip>:554/stream1
+```
+
+不带 FFmpeg 时 RtspSource 不编译、RTSP 工厂返回 nullptr，其余功能不受影响。
 
 ## 构建（RK3588 目标）
 
